@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models.LRH import LRH_f, LRH_r
 from util import DWT,IWT,setup_logger
 from tqdm import tqdm
-from models.denoisenet import Network as DN
+from models.DN import Network as DN
 
 
 
@@ -113,7 +113,7 @@ def configure_optimizers(net, lr):
     return optimizer
 
 
-def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_DN, epoch, sigma_min, sigma_current_max, logger_train, tb_logger, args):
+def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_dn, epoch, sigma_min, sigma_current_max, logger_train, tb_logger, args):
     device = next(LRH_f.parameters()).device
     dwt = DWT()
     iwt = IWT()
@@ -171,8 +171,8 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
             optimizer_f.zero_grad()
         if optimizer_r:
             optimizer_r.zero_grad()
-        if optimizer_DN:
-            optimizer_DN.zero_grad()
+        if optimizer_dn:
+            optimizer_dn.zero_grad()
 
         # 隐藏阶段
         output_steg, output_z = LRH_f(input_cover, input_secret)
@@ -181,9 +181,9 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
         # 攻击阶段
         if args.random:
             sigma = np.random.uniform(sigma_min, sigma_current_max, size=1)
-            noise = torch.cuda.FloatTensor(steg_img.size()).normal_(mean=0, std=sigma[0])
+            noise = torch.cuda.FloatTensor(steg_img.size()).normal_(mean=0, std=sigma[0]/255.0)
         else:
-            noise = torch.cuda.FloatTensor(steg_img.size()).normal_(mean=0, std=sigma_current_max)
+            noise = torch.cuda.FloatTensor(steg_img.size()).normal_(mean=0, std=sigma_current_max/255.0)
         noised_steg = steg_img + noise
 
         # 去噪阶段
@@ -198,9 +198,9 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
 
         ps, _ = args.patch_size
         if args.random:
-            gt_noise = torch.full((ps, ps), sigma[0])
+            gt_noise = torch.full((ps, ps), sigma[0]/255.0)
         else:
-            gt_noise = torch.full((ps, ps), sigma_current_max)
+            gt_noise = torch.full((ps, ps), sigma_current_max/255.0)
         if_asym = torch.ones((3, ps, ps), device=device)
         steg_low = output_steg.narrow(1, 0, 3)
         cover_low = input_cover.narrow(1, 0, 3)
@@ -222,27 +222,26 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
         if args.finetune in [2, 5]:
             optimizer_f.step()
         if args.finetune in [1, 3, 5]:
-            optimizer_DN.step()
+            optimizer_dn.step()
 
         total_loss += loss.item()
 
         if i % 10 == 0:
             if args.random:
-                att_lvl_str = f"\t[att_lvl: {sigma[0]:.4f}/{sigma_current_max:.4f}]"
+                att_lvl_str = f"\tAttack level: {sigma[0]:.2f}/{sigma_current_max:.2f}"
             else:
-                att_lvl_str = f"\t[att_lvl: {sigma_current_max:.4f}]"
+                att_lvl_str = f"\tAttack level: {sigma_current_max:.2f}"
 
             logger_train.info(
-                f"Train epoch {epoch}: "
+                f"Train epoch {epoch} | {att_lvl_str}: "
                 f"[{i * len(d)}/{len(train_dataloader.dataset)} "
                 f"({100. * i / len(train_dataloader):.1f}%)]\n"
                 f"\ttotal_loss: {loss.item():.2f} | "
                 f"\tguide_loss: {guide_loss.item():.2f} | "
-                f"\tfreq_loss: {freq_loss.item():.2f} | "
+                f"\tfreq_loss: {freq_loss.item():.2f}\n"
                 f"\trec_loss: {rec_loss.item():.2f} | "
                 f"\tdenoise_loss: {denoise_loss.item():.2f} | "
-                f"\twavelet_loss: {wavelet_loss.item():.2f} | "
-                f"{att_lvl_str}"
+                f"\twavelet_loss: {wavelet_loss.item():.2f}\n"
             )
 
 
@@ -320,11 +319,11 @@ def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, DN, logger_val):
             sigma_current_max = sigma_min + (sigma_max - sigma_min) * (epoch / args.epochs)
             sigma = np.random.uniform(sigma_min, sigma_current_max, size=1)
             sigma_total += sigma[0]
-            noise_n = torch.cuda.FloatTensor(steg_imgn.size()).normal_(mean=0, std=sigma[0])
+            noise_n = torch.cuda.FloatTensor(steg_imgn.size()).normal_(mean=0, std=sigma[0]/255.0)
             noised_stegn = steg_imgn + noise_n
-            noise_b = torch.cuda.FloatTensor(steg_imgb.size()).normal_(mean=0, std=sigma[0])
+            noise_b = torch.cuda.FloatTensor(steg_imgb.size()).normal_(mean=0, std=sigma[0]/255.0)
             noised_stegb = steg_imgb + noise_b
-            noise_l = torch.cuda.FloatTensor(steg_imgl.size()).normal_(mean=0, std=sigma[0])
+            noise_l = torch.cuda.FloatTensor(steg_imgl.size()).normal_(mean=0, std=sigma[0]/255.0)
             noised_stegl = steg_imgl + noise_l
 
             # 去噪阶段
@@ -404,7 +403,7 @@ def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, DN, logger_val):
             psnr_l_denoised.update(p9)
             ssimc_l_denoised.update(m9)
 
-            # 保存图像（保持原有逻辑）
+            # 保存图像
             if args.save_images:
                 cover_dir = os.path.join(save_dir, 'cover')
                 if not os.path.exists(cover_dir):
@@ -495,19 +494,19 @@ def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, DN, logger_val):
 
     # 输出所有指标
     logger_val.info(
-        f"Test epoch {epoch}: [Attack level: {(sigma_total/i):.3f}/{sigma_current_max:.3f}] Average metrics:\n"
-        f"Secret vs Recovered:\n"
-        f"\tPSNR_N_Reconstruct: {psnr_n.avg:.6f} | SSIM_N_Reconstruct: {ssims_n.avg:.6f}\n"
-        f"\tPSNR_B_Reconstruct: {psnr_b.avg:.6f} | SSIM_B_Reconstruct: {ssims_b.avg:.6f}\n"
-        f"\tPSNR_L_Reconstruct: {psnr_l.avg:.6f} | SSIM_L_Reconstruct: {ssims_l.avg:.6f}\n"
+        f"Test epoch {epoch} | Attack level: {(sigma_total/i):.2f}/{sigma_current_max:.2f} | Average metrics:\n"
         f"Cover vs Stego:\n"
-        f"\tPSNR_N_Stego: {psnr_n_stego.avg:.6f} | SSIM_N_Stego: {ssimc_n_stego.avg:.6f}\n"
-        f"\tPSNR_B_Stego: {psnr_b_stego.avg:.6f} | SSIM_B_Stego: {ssimc_b_stego.avg:.6f}\n"
-        f"\tPSNR_L_Stego: {psnr_l_stego.avg:.6f} | SSIM_L_Stego: {ssimc_l_stego.avg:.6f}\n"
+        f"\tPSNR_N: {psnr_n_stego.avg:.2f} | SSIM_N: {ssimc_n_stego.avg:.4f}\n"
+        f"\tPSNR_B: {psnr_b_stego.avg:.2f} | SSIM_B: {ssimc_b_stego.avg:.4f}\n"
+        f"\tPSNR_L: {psnr_l_stego.avg:.2f} | SSIM_L: {ssimc_l_stego.avg:.4f}\n"
         f"Stego vs Denoised Stego:\n"
-        f"\tPSNR_N_Denoised: {psnr_n_denoised.avg:.6f} | SSIM_N_Denoised: {ssimc_n_denoised.avg:.6f}\n"
-        f"\tPSNR_B_Denoised: {psnr_b_denoised.avg:.6f} | SSIM_B_Denoised: {ssimc_b_denoised.avg:.6f}\n"
-        f"\tPSNR_L_Denoised: {psnr_l_denoised.avg:.6f} | SSIM_L_Denoised: {ssimc_l_denoised.avg:.6f}"
+        f"\tPSNR_N: {psnr_n_denoised.avg:.2f} | SSIM_N: {ssimc_n_denoised.avg:.4f}\n"
+        f"\tPSNR_B: {psnr_b_denoised.avg:.2f} | SSIM_B: {ssimc_b_denoised.avg:.4f}\n"
+        f"\tPSNR_L: {psnr_l_denoised.avg:.2f} | SSIM_L: {ssimc_l_denoised.avg:.4f}\n"
+        f"Secret vs Recovered:\n"
+        f"\tPSNR_N: {psnr_n.avg:.2f} | SSIM_N: {ssims_n.avg:.4f}\n"
+        f"\tPSNR_B: {psnr_b.avg:.2f} | SSIM_B: {ssims_b.avg:.4f}\n"
+        f"\tPSNR_L: {psnr_l.avg:.2f} | SSIM_L: {ssims_l.avg:.4f}\n"
     )
 
     return 0
@@ -515,8 +514,8 @@ def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, DN, logger_val):
 def save_checkpoint(state, is_best, filename="checkpoint.pth.tar"):
     torch.save(state, filename)
     if is_best:
-        base_name = os.path.basename(filename)  # 提取文件名
-        dir_name = os.path.dirname(filename)   # 提取目录路径
+        base_name = os.path.basename(filename)
+        dir_name = os.path.dirname(filename)
         best_filename = os.path.join(dir_name, f"best_{base_name}")
         shutil.copyfile(filename, best_filename)
 
@@ -583,7 +582,7 @@ def parse_args(argv):
     )
     parser.add_argument("--checkpoint_f", type=str, help="Path to forward checkpoint"),
     parser.add_argument("--checkpoint_r", type=str, help="Path to reverse checkpoint"),
-    parser.add_argument("--checkpoint_DN", type=str, help="Path to DNNet checkpoint"),
+    parser.add_argument("--checkpoint_dn", type=str, help="Path to DN checkpoint"),
     parser.add_argument(
         "-exp", "--experiment", type=str, required=True, help="Experiment name"
     ),
@@ -603,7 +602,7 @@ def parse_args(argv):
     parser.add_argument("--lrate", default = 0.1,type=float, help="the ratio of lr samples"),
     parser.add_argument("--brate", default = 0.1,type=float, help="the ratio of blur samples"),
     parser.add_argument("--loss_weights", type=float, nargs=4, default=[1, 0.25, 5, 1], help="guide_weight, freq_weight, rec_weight, denoise_weight"),
-    parser.add_argument("--attack_level", type=float, nargs=2, default=[0.0, 0.1], help="Lower and upper bounds for sigma range in Gaussian noise attack")
+    parser.add_argument("--attack_level", type=float, nargs=2, default=[0.0, 25.0], help="Lower and upper bounds for sigma range in Gaussian noise attack")
     parser.add_argument(
         "--patience",
         default=150,
@@ -675,30 +674,30 @@ def main(argv):
     # 初始化模型
     lrh_f = LRH_f(args.num_steps_f).to(device)
     lrh_r = LRH_r(args.num_steps_r).to(device)
-    DN = DN().to(device)
+    dn = DN().to(device)
 
     # 根据 finetune 初始化优化器
-    lr_f, lr_r, lr_DN = args.learning_rate
+    lr_f, lr_r, lr_dn = args.learning_rate
     if args.finetune == 1:
         optimizer_f = None
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_DN = torch.optim.Adam(DN.parameters(), lr=lr_DN)
+        optimizer_dn = torch.optim.Adam(dn.parameters(), lr=lr_dn)
     elif args.finetune == 2:
         optimizer_f = configure_optimizers(lrh_f, lr_f)
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_DN = None
+        optimizer_dn = None
     elif args.finetune == 3:
         optimizer_f = None
         optimizer_r = None
-        optimizer_DN = torch.optim.Adam(DN.parameters(), lr=lr_DN)
+        optimizer_dn = torch.optim.Adam(dn.parameters(), lr=lr_dn)
     elif args.finetune == 4:
         optimizer_f = None
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_DN = None
+        optimizer_dn = None
     elif args.finetune == 5:
         optimizer_f = configure_optimizers(lrh_f, lr_f)
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_DN = torch.optim.Adam(DN.parameters(), lr=lr_DN)
+        optimizer_dn = torch.optim.Adam(dn.parameters(), lr=lr_dn)
 
     criterion = Loss()
 
@@ -736,28 +735,28 @@ def main(argv):
             optimizer_r.load_state_dict(checkpoint_r["optimizer"])
             optimizer_r.param_groups[0]['lr'] = lr_r
 
-    if args.checkpoint_DN:
-        print("Loading DN from", args.checkpoint_DN)
-        checkpoint_DN = torch.load(args.checkpoint_DN, map_location=device)
-        last_epoch_DN = checkpoint_DN["epoch"] + 1
-        state_dict = checkpoint_DN["state_dict"]
+    if args.checkpoint_dn:
+        print("Loading DN from", args.checkpoint_dn)
+        checkpoint_dn = torch.load(args.checkpoint_dn, map_location=device)
+        last_epoch_dn = checkpoint_dn["epoch"] + 1
+        state_dict = checkpoint_dn["state_dict"]
         new_state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
-        DN.load_state_dict(new_state_dict)
+        dn.load_state_dict(new_state_dict)
         if args.finetune in [1, 3]:
-            optimizer_DN.load_state_dict(checkpoint_DN["optimizer"])
-            optimizer_DN.param_groups[0]['lr'] = lr_DN
+            optimizer_dn.load_state_dict(checkpoint_dn["optimizer"])
+            optimizer_dn.param_groups[0]['lr'] = lr_dn
 
 
     if(args.finetune == 1):
-        last_epoch = max(last_epoch_r if args.checkpoint_r else 0, last_epoch_DN if args.checkpoint_DN else 0)
+        last_epoch = max(last_epoch_r if args.checkpoint_r else 0, last_epoch_dn if args.checkpoint_dn else 0)
     elif(args.finetune == 2):
         last_epoch = max(last_epoch_f if args.checkpoint_f else 0, last_epoch_r if args.checkpoint_r else 0)
     elif(args.finetune == 3):
-        last_epoch = last_epoch_DN if args.checkpoint_DN else 0
+        last_epoch = last_epoch_dn if args.checkpoint_dn else 0
     elif(args.finetune == 4):
         last_epoch = last_epoch_r if args.checkpoint_r else 0
     elif(args.finetune == 5):
-        last_epoch = max(last_epoch_f if args.checkpoint_f else 0, last_epoch_r if args.checkpoint_r else 0, last_epoch_DN if args.checkpoint_DN else 0)
+        last_epoch = max(last_epoch_f if args.checkpoint_f else 0, last_epoch_r if args.checkpoint_r else 0, last_epoch_dn if args.checkpoint_dn else 0)
 
     sigma_min, sigma_max = args.attack_level
     sigma_previous_max = 1e-6
@@ -769,8 +768,8 @@ def main(argv):
                 logger_train.info(f"Learning rate (lrh_f): {optimizer_f.param_groups[0]['lr']}")
             if optimizer_r:
                 logger_train.info(f"Learning rate (lrh_r): {optimizer_r.param_groups[0]['lr']}")
-            if optimizer_DN:
-                logger_train.info(f"Learning rate (DN): {optimizer_DN.param_groups[0]['lr']}")
+            if optimizer_dn:
+                logger_train.info(f"Learning rate (DN): {optimizer_dn.param_groups[0]['lr']}")
             
             sigma_current_max = sigma_min + (sigma_max - sigma_min) * (epoch / args.epochs)
 
@@ -779,13 +778,13 @@ def main(argv):
                 sigma_previous_max = sigma_current_max
 
             loss = train_one_epoch(
-                lrh_f, lrh_r, DN, criterion, train_dataloader,
-                optimizer_f, optimizer_r, optimizer_DN,
+                lrh_f, lrh_r, dn, criterion, train_dataloader,
+                optimizer_f, optimizer_r, optimizer_dn,
                 epoch, sigma_min, sigma_current_max, logger_train, tb_logger, args
             )
 
             if (epoch+1) % args.val_freq == 0:
-                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, DN, logger_val)
+                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, dn, logger_val)
 
             is_best = loss < best_loss
             if is_best:
@@ -822,10 +821,10 @@ def main(argv):
                             "epoch": epoch,
                             "state_dict": DN.state_dict(),
                             "loss": loss,
-                            "optimizer": optimizer_DN.state_dict(),
+                            "optimizer": optimizer_dn.state_dict(),
                         },
                         is_best,
-                        os.path.join('experiments', args.experiment, 'checkpoints', "DN_checkpoint.pth.tar")
+                        os.path.join('experiments', args.experiment, 'checkpoints', "dn_checkpoint.pth.tar")
                     )
                 if is_best:
                     logger_train.info(f"Best checkpoints saved, best loss: {best_loss:.4f}")
@@ -834,7 +833,7 @@ def main(argv):
                 logger_train.info(f"No improvement in loss for {args.patience} epochs, early stopping triggered.")
                 break
     else:
-        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, DN, logger_val)
+        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, dn, logger_val)
 
 
 if __name__ == "__main__":

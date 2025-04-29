@@ -122,7 +122,7 @@ def train_one_epoch(LRH_f, LRH_r, criterion, train_dataloader, optimizer_f, opti
     iwt = IWT()
 
     total_loss = 0
-
+    num_batches = len(train_dataloader)
     for i, d in enumerate(train_dataloader):
         d = d.to(device)
         cover_img = d[d.shape[0] // 2:, :, :, :]
@@ -189,13 +189,13 @@ def train_one_epoch(LRH_f, LRH_r, criterion, train_dataloader, optimizer_f, opti
                 f"Train epoch {epoch}: ["
                 f"{i * len(d)}/{len(train_dataloader.dataset)}"
                 f" ({100. * i / len(train_dataloader):.0f}%)]"
-                f'\thide loss: {hide_loss.item():.3f} |'
+                f'\thide loss: {hide_loss.item():.3f}'
             )
-
+    avg_loss = total_loss / num_batches
+    logger_train.info(f"Train epoch {epoch}: Average loss: {avg_loss:.3f}")
     tb_logger.add_scalar('{}'.format('[train]: hide_loss'), hide_loss.item(), epoch)
 
-    return total_loss 
-
+    return avg_loss
 
 
 def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, logger_val ):
@@ -353,24 +353,21 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, logger_val ):
                 secret_revn.save(os.path.join(nrec_dir, '%03d.png' % i))
 
 
-            i=i+1
+        i=i+1
 
 
     logger_val.info(
-        f"Test epoch {epoch}: Average losses:"
-        f"\tPSNRC_N: {psnrc_n.avg:.6f} |"
-        f"\tSSIMC_N: {ssimc_n.avg:.6f} |"
-        f"\tPSNRS_N: {psnrs_n.avg:.6f} |" 
-        f"\tSSIMS_N: {ssims_n.avg:.6f} |"
-        f"\tPSNRC_B: {psnrc_b.avg:.6f} |"
-        f"\tSSIMC_B: {ssimc_b.avg:.6f} |"
-        f"\tPSNRS_B: {psnrs_b.avg:.6f} |" 
-        f"\tSSIMS_B: {ssims_b.avg:.6f} |"
-        f"\tPSNRC_L: {psnrc_l.avg:.6f} |"
-        f"\tSSIMC_L: {ssimc_l.avg:.6f} |"
-        f"\tPSNRS_L: {psnrs_l.avg:.6f} |" 
-        f"\tSSIMS_L: {ssims_l.avg:.6f} |"
+        f"Test epoch {epoch} | Average losses:\n"
+        f"Cover vs Stego:\n"
+        f"\tPSNR_N: {psnrc_n.avg:.6f} | SSIM_N: {ssimc_n.avg:.6f}\n"
+        f"\tPSNR_B: {psnrc_b.avg:.6f} | SSIM_B: {ssimc_b.avg:.6f}\n"
+        f"\tPSNR_L: {psnrc_l.avg:.6f} | SSIM_L: {ssimc_l.avg:.6f}\n"
+        f"Secret vs Recovered:\n"
+        f"\tPSNR_N: {psnrs_n.avg:.6f} | SSIM_N: {ssims_n.avg:.6f}\n"
+        f"\tPSNR_B: {psnrs_b.avg:.6f} | SSIM_B: {ssims_b.avg:.6f}\n"
+        f"\tPSNR_L: {psnrs_l.avg:.6f} | SSIM_L: {ssims_l.avg:.6f}\n"
     )
+
 
     return 0
 
@@ -597,7 +594,7 @@ def main(argv):
                     os.path.join('experiments', args.experiment, 'checkpoints', "lrh_r_checkpoint.pth.tar")
                 )
                 if is_best:
-                    logger_val.info(f"Best checkpoints saved for both lrh_f and lrh_r in epoch {epoch}.")
+                    logger_train.info(f"Best checkpoints saved for both lrh_f and lrh_r in epoch {epoch}.")
     else:
         loss = test_epoch(args, 0, test_dataloader, lrh_f, lrh_r, logger_val)
 

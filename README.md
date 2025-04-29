@@ -1,3 +1,4 @@
+
 # NSRNet: Noise-Robust Stego-Image Restoration Network
 
 ## 📘 项目简介
@@ -27,4 +28,76 @@
 
 ---
 
-## 📌 作者
+## 🖼️ 可视化结果
+
+### 🔍 隐写图像与覆盖图像对比
+
+![](./images/stego.jpg)
+
+### 🧩 真实秘密图像与修复后图像对比
+![](./images/secret.jpg)
+
+---
+
+## 🔧 项目安装
+
+1. 克隆项目代码：
+   ```bash
+   git clone https://github.com/AKA-Seven/NSRNet.git
+   cd NSRNet
+   ```
+
+2. 创建并激活虚拟环境（推荐使用 Conda）：
+   ```bash
+   conda create -n your_env_name python=3.8 -y
+   conda activate your_env_name
+   ```
+
+3. 安装依赖库：
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+---
+
+## 📦 数据准备
+
+1. 下载 DIV2K 数据集：
+   ```bash
+   wget http://data.vision.ee.ethz.ch/cvl/DIV2K/DIV2K_train_HR.zip
+   wget http://data.vision.ee.ethz.ch/cvl/DIV2K/DIV2K_valid_HR.zip
+   ```
+
+2. 解压到项目根目录下，确保文件结构如下：
+   ```
+   ├── NSRNet
+   │   ├── DIV2K_train_HR
+   │   ├── DIV2K_valid_HR
+   │   ├── pretrained
+   │   ├── ...
+   ```
+
+3. 将预训练模型权重放置到 `pretrained/` 文件夹中。
+
+  预训练权重下载：
+
+---
+
+## 🚀 运行方法
+
+- 训练/测试 LRH（隐写网络）：
+  ```bash
+  bash train_LRH.sh
+  ```
+
+- 联合训练/测试 DN & LRH：
+  ```bash
+  bash finetune.sh
+  ```
+
+- 训练/测试 NSRNet（完整隐写域复原网络，包括 LRH+DN+LSR）：
+  ```bash
+  bash train_LSR.sh
+  ```
+
+---

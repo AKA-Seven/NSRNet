@@ -1,5 +1,3 @@
-import sys
-sys.path.append("../")
 import os
 import argparse
 import random
@@ -21,9 +19,9 @@ from pytorch_msssim import ms_ssim
 from typing import Tuple, Union
 from torch.utils.tensorboard import SummaryWriter
 from util import DWT,IWT,setup_logger
-from models.LRH_fr import LRH_f, LRH_r
+from models.LRH import LRH_f, LRH_r
 from models.LSR import Model as LSR
-from models.denoisenet import Network as DN
+from models.DN import Network as DN
 from tqdm import tqdm
 import lpips
 import pdb
@@ -119,7 +117,7 @@ def configure_optimizers(net, args):
 
 
 
-def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_lsr, optimizer_DN, sigma_current_max, epoch, logger_train, tb_logger, args):
+def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_lsr, optimizer_dn, sigma_current_max, epoch, logger_train, tb_logger, args):
     if args.finetune:
         LRH_f.train()
         LRH_r.train()
@@ -162,7 +160,7 @@ def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimize
             optimizer_f.zero_grad()
             optimizer_r.zero_grad()
         optimizer_lsr.zero_grad()
-        optimizer_DN.zero_grad()
+        optimizer_dn.zero_grad()
         #################
         # hide#
         #################
@@ -205,20 +203,19 @@ def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimize
 
         if i % 10 == 0:
             logger_train.info(
-                f"Train epoch {epoch}: ["
+                f"Train epoch {epoch} | Attack level: {sigma[0]:.2f}/{sigma_current_max:.2f} ["
                 f"{i*len(d)}/{len(train_dataloader.dataset)}"
-                f" ({100. * i / len(train_dataloader):.0f}%)]"
-                f"[attack level: {sigma[0]:.6f}/{sigma_current_max:.6f}]"
-                f'\tLoss: {loss.item():.3f} |'
+                f" ({100. * i / len(train_dataloader):.0f}%)]:"
+                f'\tLoss: {loss.item():.3f}'
         
             )
     avg_loss = total_loss / num_batches
-    logger_train.info(f"Train epoch {epoch}: Average loss: {avg_loss:.3f}, sigma: {sigma_current_max:.3f}")
+    logger_train.info(f"Train epoch {epoch}: Average loss: {avg_loss:.3f}")
     tb_logger.add_scalar('[train]: loss', avg_loss, epoch)
     return avg_loss
 
 
-def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,criterion,lpips_fn,degrate_type):
+def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,criterion,lpips_fn,degrade_type):
     dwt = DWT()
     iwt = IWT()
     LRH_f.eval()
@@ -243,16 +240,16 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,cr
             d = d.to(device)
             cover_img = d[d.shape[0] // 2:, :, :, :]  #[1,3,224,224]
             secret_img = d[:d.shape[0] // 2, :, :, :]
-            if degrate_type == 1:
+            if degrade_type == 1:
                 noise = torch.cuda.FloatTensor(secret_img.size()).normal_(mean=0, std=25 / 255.)  
                 noise_secret_img = secret_img + noise 
                 input_secret_img = noise_secret_img
                
-            elif degrate_type == 2:
+            elif degrade_type == 2:
                 blur_secret_img = guass_blur(secret_img,15,1.6)
                 input_secret_img = blur_secret_img    
 
-            elif degrate_type == 3:
+            elif degrade_type == 3:
                 lr_secret_img = downsample(secret_img,4)
                 input_secret_img = lr_secret_img       
                 
@@ -274,7 +271,7 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,cr
             sigma_current_max = sigma_min + (sigma_max - sigma_min) * (epoch / args.epochs)
             sigma = np.random.uniform(sigma_min, sigma_current_max, size=1)
             sigma_total += sigma[0]
-            noise = torch.cuda.FloatTensor(steg_ori.size()).normal_(mean=0, std=sigma[0])
+            noise = torch.cuda.FloatTensor(steg_ori.size()).normal_(mean=0, std=sigma[0]/255.0)
             noised_steg = steg_ori + noise
 
             # 去噪阶段
@@ -325,16 +322,16 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,cr
             ssimcori.update(m3)
                 
             if args.save_img:
-                denoised_steg_dir = os.path.join(save_dir, 'denoised_steg', str(degrate_type))
+                denoised_steg_dir = os.path.join(save_dir, 'denoised_steg', str(degrade_type))
                 if not os.path.exists(denoised_steg_dir):
                     os.makedirs(denoised_steg_dir)
                 denoised_steg_img.save(os.path.join(denoised_steg_dir, '%03d.png' % i))
 
-                rec_dir = os.path.join(save_dir,'rec',str(degrate_type))
+                rec_dir = os.path.join(save_dir,'rec',str(degrade_type))
                 if not os.path.exists(rec_dir):
                     os.makedirs(rec_dir)
 
-                secret_dir = os.path.join(save_dir,'secret',str(degrate_type))
+                secret_dir = os.path.join(save_dir,'secret',str(degrade_type))
                 if not os.path.exists(secret_dir):
                     os.makedirs(secret_dir)
 
@@ -342,11 +339,11 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,cr
                 if not os.path.exists(cover_dir):
                     os.makedirs(cover_dir)
                 
-                stego_dir = os.path.join(save_dir,'stego',str(degrate_type))
+                stego_dir = os.path.join(save_dir,'stego',str(degrade_type))
                 if not os.path.exists(stego_dir):
                     os.makedirs(stego_dir)
 
-                ori_stego_dir = os.path.join(save_dir,'ori_stego',str(degrate_type))
+                ori_stego_dir = os.path.join(save_dir,'ori_stego',str(degrade_type))
                 if not os.path.exists(ori_stego_dir):
                     os.makedirs(ori_stego_dir)
                 
@@ -362,18 +359,17 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,cr
 
 
     logger_val.info(
-        f"Test epoch {epoch} - Degrate Type {degrate_type}: Average losses:"
-        f"\tPSNRC: {psnrc.avg:.6f} |"
-        f"\tSSIMC: {ssimc.avg:.6f} |"
-        f"\tLPIPSC: {lpipsc.avg:.6f} |"
-        f"\tPSNRS: {psnrs.avg:.6f} |"
-        f"\tSSIMS: {ssims.avg:.6f} |"
-        f"\tLPIPSS: {lpipss.avg:.6f} |"
-        f"\tPSNRCORI: {psnrcori.avg:.6f} |"
-        f"\tSSIMCORI: {ssimcori.avg:.6f} |"
-        f"\tLPIPSORI: {lpipscori.avg:.6f} |\n"
-        f"Attack level: {(sigma_total/i):.6f}/{sigma_current_max:.6f}\n"
+        f"Test epoch {epoch} - Degrade Type {degrade_type} | "
+        f"Attack level: {(sigma_total/i):.2f}/{sigma_current_max:.2f}\n"
+        f"Average losses:\n"
+        f"Cover vs Stego:\n"
+        f"\tPSNRC: {psnrc.avg:.2f} | SSIMC: {ssimc.avg:.4f} | LPIPSC: {lpipsc.avg:.4f}\n"
+        f"Secret vs Recovered:\n"
+        f"\tPSNRS: {psnrs.avg:.2f} | SSIMS: {ssims.avg:.4f} | LPIPSS: {lpipss.avg:.4f}\n"
+        f"Original Stego vs Cover:\n"
+        f"\tPSNRCORI: {psnrcori.avg:.2f} | SSIMCORI: {ssimcori.avg:.4f} | LPIPSORI: {lpipscori.avg:.4f}\n"
     )
+
 
               
 
@@ -447,7 +443,7 @@ def parse_args(argv):
     )
     parser.add_argument("--checkpoint_f", type=str, help="Path to forward checkpoint"),
     parser.add_argument("--checkpoint_r", type=str, help="Path to reverse checkpoint"),
-    parser.add_argument("--checkpoint_DN", type=str, help="Path to DNNet checkpoint"),
+    parser.add_argument("--checkpoint_dn", type=str, help="Path to DN checkpoint"),
     parser.add_argument("--checkpoint_lsr", type=str, help="Path to a LSR checkpoint"),
     parser.add_argument(
         "-exp", "--experiment", type=str, required=True, help="Experiment name"
@@ -504,7 +500,7 @@ def parse_args(argv):
         "--steps", type=int,  default=4, help="num of wlblocks in each scale of LSR"
     ),
     parser.add_argument("--nafwidth", default = 32,type=int, help="the ratio of noisy samples"),
-    parser.add_argument("--attack_level", type=float, nargs=2, default=[0.0, 0.1], help="Lower and upper bounds for sigma range in Gaussian noise attack")
+    parser.add_argument("--attack_level", type=float, nargs=2, default=[0.0, 25.0], help="Lower and upper bounds for sigma range in Gaussian noise attack")
     parser.add_argument(
         "--patience",
         default=150,
@@ -573,7 +569,7 @@ def main(argv):
 
     lrh_f = LRH_f(args.num_steps_f).to(device)
     lrh_r = LRH_r(args.num_steps_r).to(device)
-    DN = DN().to(device)
+    dn = DN().to(device)
   
     
 
@@ -586,7 +582,7 @@ def main(argv):
 
     optimizer_f = configure_optimizers(lrh_f, args)
     optimizer_r = configure_optimizers(lrh_r, args)
-    optimizer_DN = torch.optim.Adam(DN.parameters(), lr=args.learning_rate)
+    optimizer_dn = torch.optim.Adam(dn.parameters(), lr=args.learning_rate)
     optimizer_lsr = configure_optimizers(lsr, args)
     # 加载检查点
     if args.checkpoint_f:
@@ -605,14 +601,14 @@ def main(argv):
         optimizer_r.load_state_dict(checkpoint_r["optimizer"])
         optimizer_r.param_groups[0]['lr'] = args.learning_rate
 
-    if args.checkpoint_DN:
-        print("Loading DN from", args.checkpoint_DN)
-        checkpoint_DN = torch.load(args.checkpoint_DN, map_location=device)
-        state_dict = checkpoint_DN["state_dict"]
+    if args.checkpoint_dn:
+        print("Loading DN from", args.checkpoint_dn)
+        checkpoint_dn = torch.load(args.checkpoint_dn, map_location=device)
+        state_dict = checkpoint_dn["state_dict"]
         new_state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
-        DN.load_state_dict(new_state_dict)
-        optimizer_DN.load_state_dict(checkpoint_DN["optimizer"])
-        optimizer_DN.param_groups[0]['lr'] = args.learning_rate
+        dn.load_state_dict(new_state_dict)
+        optimizer_dn.load_state_dict(checkpoint_dn["optimizer"])
+        optimizer_dn.param_groups[0]['lr'] = args.learning_rate
     
     if args.checkpoint_lsr:  # load from previous checkpoint
         print("Loading lsr from", args.checkpoint_lsr)
@@ -645,13 +641,13 @@ def main(argv):
                 lrh_f,
                 lrh_r,
                 lsr,
-                DN,
+                dn,
                 criterion,
                 train_dataloader,
                 optimizer_f,
                 optimizer_r,
                 optimizer_lsr,
-                optimizer_DN,
+                optimizer_dn,
                 sigma_current_max,
                 epoch,
                 logger_train,
@@ -659,8 +655,8 @@ def main(argv):
                 args
             )
             if epoch % args.val_freq == 0:
-                degrate_type = 4
-                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, lsr, DN,logger_val,criterion,lpips_fn,degrate_type)
+                degrade_type = 4
+                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, lsr, dn,logger_val,criterion,lpips_fn,degrade_type)
 
             is_best = loss < best_loss
             if is_best:
@@ -704,7 +700,7 @@ def main(argv):
                 logger_train.info(f"No improvement in loss for {args.patience} epochs, early stopping triggered.")
                 break
     else:
-        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, lsr, DN,logger_val,criterion,lpips_fn,args.test_degrade_type)
+        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, lsr, dn,logger_val,criterion,lpips_fn,args.test_degrade_type)
 
 
 if __name__ == "__main__":
