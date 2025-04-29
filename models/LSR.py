@@ -2,8 +2,8 @@ import torch
 from torch import nn
 import math
 from util import waveletDecomp,initialize_weights
-from SRM import SRM
-from LPM import LPM
+from models.SRM import SRM
+from models.LPM import LPM
 
 
 
