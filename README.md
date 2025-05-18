@@ -7,15 +7,9 @@
 
 本项目旨在构建一个具有噪声鲁棒性的隐写域图像修复网络 —— **NSRNet**，能够在隐写图像中存在高斯噪声干扰的情况下，在隐写域完成去噪、去模糊、超分辨率任务，并有效恢复秘密图像。
 
----
+### 🧠 NSRNet 模型结构图
 
-## 🔗 参考项目
-
-- [gclonghorn/PIRNet](https://github.com/gclonghorn/PIRNet)  
-  > 图像隐写域复原网络的基础架构
-
-- [IDKiro/CBDNet-pytorch](https://github.com/IDKiro/CBDNet-pytorch)  
-  > 图像盲去噪模型
+![NSRNet](https://raw.githubusercontent.com/AKA-Seven/NSRNet/main/images/NSRNet.png)
 
 ---
 
@@ -32,10 +26,11 @@
 
 ### 🔍 隐写图像与覆盖图像对比
 
-![](./images/stego.jpg)
+![stego](https://raw.githubusercontent.com/AKA-Seven/NSRNet/main/images/stego.jpg)
 
 ### 🧩 真实秘密图像与修复后图像对比
-![](./images/secret.jpg)
+
+![secret](https://raw.githubusercontent.com/AKA-Seven/NSRNet/main/images/secret.jpg)
 
 ---
 
@@ -77,25 +72,26 @@
    │   ├── ...
    ```
 
-3. 将预训练模型权重放置到 `pretrained/` 文件夹中。
+3. 将预训练模型权重放置到 `pretrained/` 文件夹中:
 
-  预训练权重下载：
+   你可以通过以下链接下载预训练权重（Google Drive）：
+   [点击下载预训练模型](https://drive.google.com/drive/folders/1u6FkmfDke0oYWwm41kQHWHWx17wCEQoa?usp=sharing)
 
 ---
 
 ## 🚀 运行方法
 
-- 训练/测试 LRH（隐写网络）：
+- 训练&测试 LRH（隐写网络）：
   ```bash
   bash train_LRH.sh
   ```
 
-- 联合训练/测试 DN & LRH：
+- 联合训练&测试 SPD & LRH：
   ```bash
   bash finetune.sh
   ```
 
-- 训练/测试 NSRNet（完整隐写域复原网络，包括 LRH+DN+LSR）：
+- 训练&测试 NSRNet（完整隐写域复原网络，包括 LRH+SPD+LSR）：
   ```bash
   bash train_LSR.sh
   ```
