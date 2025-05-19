@@ -79,7 +79,7 @@ class VGGLoss(nn.Module):
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-class Loss(nn.Module):
+class FinetuneLoss(nn.Module):
     def __init__(self):
         super().__init__()
         self.mse = torch.nn.MSELoss(reduce=True, size_average=False)

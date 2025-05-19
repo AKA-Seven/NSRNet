@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from util import DWT,IWT,setup_logger
 from models.LRH import LRH_f, LRH_r
 from models.LSR import Model as LSR
-from models.DN import Network as DN
+from models.SPD import Network as SPD
 from tqdm import tqdm
 import lpips
 import pdb
@@ -117,7 +117,7 @@ def configure_optimizers(net, args):
 
 
 
-def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_lsr, optimizer_dn, sigma_current_max, epoch, logger_train, tb_logger, args):
+def train_one_epoch(LRH_f, LRH_r, LSR, SPD, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_lsr, optimizer_spd, sigma_current_max, epoch, logger_train, tb_logger, args):
     if args.finetune:
         LRH_f.train()
         LRH_r.train()
@@ -126,7 +126,7 @@ def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimize
             param.requires_grad=False
         for param in LRH_r.parameters():
             param.requires_grad=False
-    for param in DN.parameters():
+    for param in SPD.parameters():
         param.requires_grad=False
     LSR.train()
  
@@ -160,7 +160,7 @@ def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimize
             optimizer_f.zero_grad()
             optimizer_r.zero_grad()
         optimizer_lsr.zero_grad()
-        optimizer_dn.zero_grad()
+        optimizer_spd.zero_grad()
         #################
         # hide#
         #################
@@ -175,7 +175,7 @@ def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimize
         noised_steg = steg_ori + noise
 
         # 去噪阶段
-        noise_level_est, denoised_steg = DN(noised_steg)
+        noise_level_est, denoised_steg = SPD(noised_steg)
 
         #################
         #denoise#
@@ -215,12 +215,12 @@ def train_one_epoch(LRH_f, LRH_r, LSR, DN, criterion, train_dataloader, optimize
     return avg_loss
 
 
-def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,criterion,lpips_fn,degrade_type):
+def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, SPD, logger_val,criterion,lpips_fn,degrade_type):
     dwt = DWT()
     iwt = IWT()
     LRH_f.eval()
     LRH_r.eval()
-    DN.eval()
+    SPD.eval()
     LSR.eval() #在测试时禁用BN，避免batchsize为1时的问题
     device = next(LRH_f.parameters()).device
     psnrc = AverageMeter()
@@ -275,7 +275,7 @@ def test_epoch(args,epoch, test_dataloader, LRH_f, LRH_r, LSR, DN, logger_val,cr
             noised_steg = steg_ori + noise
 
             # 去噪阶段
-            noise_level_est, denoised_steg = DN(noised_steg)
+            noise_level_est, denoised_steg = SPD(noised_steg)
             #denoise
             steg_clean = LSR(denoised_steg)
             output_clean = dwt(steg_clean)
@@ -443,7 +443,7 @@ def parse_args(argv):
     )
     parser.add_argument("--checkpoint_f", type=str, help="Path to forward checkpoint"),
     parser.add_argument("--checkpoint_r", type=str, help="Path to reverse checkpoint"),
-    parser.add_argument("--checkpoint_dn", type=str, help="Path to DN checkpoint"),
+    parser.add_argument("--checkpoint_spd", type=str, help="Path to SPD checkpoint"),
     parser.add_argument("--checkpoint_lsr", type=str, help="Path to a LSR checkpoint"),
     parser.add_argument(
         "-exp", "--experiment", type=str, required=True, help="Experiment name"
@@ -569,9 +569,9 @@ def main(argv):
 
     lrh_f = LRH_f(args.num_steps_f).to(device)
     lrh_r = LRH_r(args.num_steps_r).to(device)
-    dn = DN().to(device)
+    spd = SPD().to(device)
   
-    
+    last_epoch = 0
 
     lsr = LSR(steps = args.steps,klvl=args.klvl,mid=args.mid,enc=args.enc,dec=args.dec,lfrestore=args.lfrestore,width=args.nafwidth)
     lsr = lsr.to(device)
@@ -582,7 +582,7 @@ def main(argv):
 
     optimizer_f = configure_optimizers(lrh_f, args)
     optimizer_r = configure_optimizers(lrh_r, args)
-    optimizer_dn = torch.optim.Adam(dn.parameters(), lr=args.learning_rate)
+    optimizer_spd = torch.optim.Adam(spd.parameters(), lr=args.learning_rate)
     optimizer_lsr = configure_optimizers(lsr, args)
     # 加载检查点
     if args.checkpoint_f:
@@ -601,14 +601,14 @@ def main(argv):
         optimizer_r.load_state_dict(checkpoint_r["optimizer"])
         optimizer_r.param_groups[0]['lr'] = args.learning_rate
 
-    if args.checkpoint_dn:
-        print("Loading DN from", args.checkpoint_dn)
-        checkpoint_dn = torch.load(args.checkpoint_dn, map_location=device)
-        state_dict = checkpoint_dn["state_dict"]
+    if args.checkpoint_spd:
+        print("Loading SPD from", args.checkpoint_spd)
+        checkpoint_spd = torch.load(args.checkpoint_spd, map_location=device)
+        state_dict = checkpoint_spd["state_dict"]
         new_state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
-        dn.load_state_dict(new_state_dict)
-        optimizer_dn.load_state_dict(checkpoint_dn["optimizer"])
-        optimizer_dn.param_groups[0]['lr'] = args.learning_rate
+        spd.load_state_dict(new_state_dict)
+        optimizer_spd.load_state_dict(checkpoint_spd["optimizer"])
+        optimizer_spd.param_groups[0]['lr'] = args.learning_rate
     
     if args.checkpoint_lsr:  # load from previous checkpoint
         print("Loading lsr from", args.checkpoint_lsr)
@@ -623,7 +623,6 @@ def main(argv):
     lpips_fn = lpips.LPIPS(net='alex',version='0.1')
     lpips_fn.cuda()
     
-    last_epoch = 0
     loss = float("inf")
     best_loss = float("inf")
     
@@ -641,13 +640,13 @@ def main(argv):
                 lrh_f,
                 lrh_r,
                 lsr,
-                dn,
+                spd,
                 criterion,
                 train_dataloader,
                 optimizer_f,
                 optimizer_r,
                 optimizer_lsr,
-                optimizer_dn,
+                optimizer_spd,
                 sigma_current_max,
                 epoch,
                 logger_train,
@@ -656,7 +655,7 @@ def main(argv):
             )
             if epoch % args.val_freq == 0:
                 degrade_type = 4
-                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, lsr, dn,logger_val,criterion,lpips_fn,degrade_type)
+                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, lsr, spd,logger_val,criterion,lpips_fn,degrade_type)
 
             is_best = loss < best_loss
             if is_best:
@@ -700,7 +699,7 @@ def main(argv):
                 logger_train.info(f"No improvement in loss for {args.patience} epochs, early stopping triggered.")
                 break
     else:
-        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, lsr, dn,logger_val,criterion,lpips_fn,args.test_degrade_type)
+        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, lsr, spd,logger_val,criterion,lpips_fn,args.test_degrade_type)
 
 
 if __name__ == "__main__":

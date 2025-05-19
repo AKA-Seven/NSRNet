@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from datasets import ImageFolder
-from losses import Loss
+from losses import FinetuneLoss
 import logging
 import numpy as np
 import PIL.Image as Image
@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models.LRH import LRH_f, LRH_r
 from util import DWT,IWT,setup_logger
 from tqdm import tqdm
-from models.DN import Network as DN
+from models.SPD import Network as SPD
 
 
 
@@ -113,7 +113,7 @@ def configure_optimizers(net, lr):
     return optimizer
 
 
-def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_dn, epoch, sigma_min, sigma_current_max, logger_train, tb_logger, args):
+def train_one_epoch(LRH_f, LRH_r, SPD, criterion, train_dataloader, optimizer_f, optimizer_r, optimizer_spd, epoch, sigma_min, sigma_current_max, logger_train, tb_logger, args):
     device = next(LRH_f.parameters()).device
     dwt = DWT()
     iwt = IWT()
@@ -121,23 +121,23 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
     if args.finetune == 1:
         LRH_f.eval()
         LRH_r.train()
-        DN.train()
+        SPD.train()
     elif args.finetune == 2:
         LRH_f.train()
         LRH_r.train()
-        DN.eval()
+        SPD.eval()
     elif args.finetune == 3:
         LRH_f.eval()
         LRH_r.eval()
-        DN.train()
+        SPD.train()
     elif args.finetune == 4:
         LRH_f.eval()
         LRH_r.train()
-        DN.eval()
+        SPD.eval()
     elif args.finetune == 5:
         LRH_f.train()
         LRH_r.train()
-        DN.train()
+        SPD.train()
     else:
         raise ValueError("finetune must be 1, 2, 3, 4, 5")
 
@@ -171,8 +171,8 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
             optimizer_f.zero_grad()
         if optimizer_r:
             optimizer_r.zero_grad()
-        if optimizer_dn:
-            optimizer_dn.zero_grad()
+        if optimizer_spd:
+            optimizer_spd.zero_grad()
 
         # 隐藏阶段
         output_steg, output_z = LRH_f(input_cover, input_secret)
@@ -187,7 +187,7 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
         noised_steg = steg_img + noise
 
         # 去噪阶段
-        noise_level_est, denoised_steg = DN(noised_steg)
+        noise_level_est, denoised_steg = SPD(noised_steg)
 
         # 揭示阶段
         steg_img_dwt = dwt(denoised_steg)
@@ -222,7 +222,7 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
         if args.finetune in [2, 5]:
             optimizer_f.step()
         if args.finetune in [1, 3, 5]:
-            optimizer_dn.step()
+            optimizer_spd.step()
 
         total_loss += loss.item()
 
@@ -254,12 +254,12 @@ def train_one_epoch(LRH_f, LRH_r, DN, criterion, train_dataloader, optimizer_f, 
 
 
 
-def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, DN, logger_val):
+def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, SPD, logger_val):
     dwt = DWT()
     iwt = IWT()
     LRH_f.eval()
     LRH_r.eval()
-    DN.eval()
+    SPD.eval()
     device = next(LRH_f.parameters()).device
 
     # 指标：秘密图像 vs 恢复图像
@@ -327,11 +327,11 @@ def test_epoch(args, epoch, test_dataloader, LRH_f, LRH_r, DN, logger_val):
             noised_stegl = steg_imgl + noise_l
 
             # 去噪阶段
-            noise_level_est_n, output_n = DN(noised_stegn)
+            noise_level_est_n, output_n = SPD(noised_stegn)
             denoised_stegn = output_n
-            noise_level_est_b, output_b = DN(noised_stegb)
+            noise_level_est_b, output_b = SPD(noised_stegb)
             denoised_stegb = output_b
-            noise_level_est_l, output_l = DN(noised_stegl)
+            noise_level_est_l, output_l = SPD(noised_stegl)
             denoised_stegl = output_l
 
             # 揭示阶段
@@ -582,7 +582,7 @@ def parse_args(argv):
     )
     parser.add_argument("--checkpoint_f", type=str, help="Path to forward checkpoint"),
     parser.add_argument("--checkpoint_r", type=str, help="Path to reverse checkpoint"),
-    parser.add_argument("--checkpoint_dn", type=str, help="Path to DN checkpoint"),
+    parser.add_argument("--checkpoint_spd", type=str, help="Path to SPD checkpoint"),
     parser.add_argument(
         "-exp", "--experiment", type=str, required=True, help="Experiment name"
     ),
@@ -613,7 +613,7 @@ def parse_args(argv):
         "--finetune",
         type=int,
         choices=[1, 2, 3, 4, 5],
-        help="Finetune mode: 1 for LRH_r+DN, 2 for LRH_f+LRH_r, 3 for DN only, 4 for LRH_r only, 5 for all models)",
+        help="Finetune mode: 1 for LRH_r+SPD, 2 for LRH_f+LRH_r, 3 for SPD only, 4 for LRH_r only, 5 for all models)",
     ),
     parser.add_argument(
         "--random",
@@ -674,40 +674,40 @@ def main(argv):
     # 初始化模型
     lrh_f = LRH_f(args.num_steps_f).to(device)
     lrh_r = LRH_r(args.num_steps_r).to(device)
-    dn = DN().to(device)
+    spd = SPD().to(device)
 
     # 根据 finetune 初始化优化器
-    lr_f, lr_r, lr_dn = args.learning_rate
+    lr_f, lr_r, lr_spd = args.learning_rate
     if args.finetune == 1:
         optimizer_f = None
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_dn = torch.optim.Adam(dn.parameters(), lr=lr_dn)
+        optimizer_spd = torch.optim.Adam(spd.parameters(), lr=lr_spd)
     elif args.finetune == 2:
         optimizer_f = configure_optimizers(lrh_f, lr_f)
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_dn = None
+        optimizer_spd = None
     elif args.finetune == 3:
         optimizer_f = None
         optimizer_r = None
-        optimizer_dn = torch.optim.Adam(dn.parameters(), lr=lr_dn)
+        optimizer_spd = torch.optim.Adam(spd.parameters(), lr=lr_spd)
     elif args.finetune == 4:
         optimizer_f = None
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_dn = None
+        optimizer_spd = None
     elif args.finetune == 5:
         optimizer_f = configure_optimizers(lrh_f, lr_f)
         optimizer_r = configure_optimizers(lrh_r, lr_r)
-        optimizer_dn = torch.optim.Adam(dn.parameters(), lr=lr_dn)
+        optimizer_spd = torch.optim.Adam(spd.parameters(), lr=lr_spd)
 
-    criterion = Loss()
+    criterion = FinetuneLoss()
 
     logger_train.info(args)
     if args.finetune == 1:
-        logger_train.info("Finetune mode 1: Training LRH_r and DN")
+        logger_train.info("Finetune mode 1: Training LRH_r and SPD")
     elif args.finetune == 2:
         logger_train.info("Finetune mode 2: Training LRH_f and LRH_r")
     elif args.finetune == 3:
-        logger_train.info("Finetune mode 3: Training DN only")
+        logger_train.info("Finetune mode 3: Training SPD only")
     elif args.finetune == 4:
         logger_train.info("Finetune mode 4: Training LRH_r only")
     elif args.finetune == 5:
@@ -735,28 +735,28 @@ def main(argv):
             optimizer_r.load_state_dict(checkpoint_r["optimizer"])
             optimizer_r.param_groups[0]['lr'] = lr_r
 
-    if args.checkpoint_dn:
-        print("Loading DN from", args.checkpoint_dn)
-        checkpoint_dn = torch.load(args.checkpoint_dn, map_location=device)
-        last_epoch_dn = checkpoint_dn["epoch"] + 1
-        state_dict = checkpoint_dn["state_dict"]
+    if args.checkpoint_spd:
+        print("Loading SPD from", args.checkpoint_spd)
+        checkpoint_spd = torch.load(args.checkpoint_spd, map_location=device)
+        last_epoch_spd = checkpoint_spd["epoch"] + 1
+        state_dict = checkpoint_spd["state_dict"]
         new_state_dict = {key.replace("module.", ""): value for key, value in state_dict.items()}
-        dn.load_state_dict(new_state_dict)
+        spd.load_state_dict(new_state_dict)
         if args.finetune in [1, 3]:
-            optimizer_dn.load_state_dict(checkpoint_dn["optimizer"])
-            optimizer_dn.param_groups[0]['lr'] = lr_dn
+            optimizer_spd.load_state_dict(checkpoint_spd["optimizer"])
+            optimizer_spd.param_groups[0]['lr'] = lr_spd
 
 
     if(args.finetune == 1):
-        last_epoch = max(last_epoch_r if args.checkpoint_r else 0, last_epoch_dn if args.checkpoint_dn else 0)
+        last_epoch = max(last_epoch_r if args.checkpoint_r else 0, last_epoch_spd if args.checkpoint_spd else 0)
     elif(args.finetune == 2):
         last_epoch = max(last_epoch_f if args.checkpoint_f else 0, last_epoch_r if args.checkpoint_r else 0)
     elif(args.finetune == 3):
-        last_epoch = last_epoch_dn if args.checkpoint_dn else 0
+        last_epoch = last_epoch_spd if args.checkpoint_spd else 0
     elif(args.finetune == 4):
         last_epoch = last_epoch_r if args.checkpoint_r else 0
     elif(args.finetune == 5):
-        last_epoch = max(last_epoch_f if args.checkpoint_f else 0, last_epoch_r if args.checkpoint_r else 0, last_epoch_dn if args.checkpoint_dn else 0)
+        last_epoch = max(last_epoch_f if args.checkpoint_f else 0, last_epoch_r if args.checkpoint_r else 0, last_epoch_spd if args.checkpoint_spd else 0)
 
     sigma_min, sigma_max = args.attack_level
     sigma_previous_max = 1e-6
@@ -768,8 +768,8 @@ def main(argv):
                 logger_train.info(f"Learning rate (lrh_f): {optimizer_f.param_groups[0]['lr']}")
             if optimizer_r:
                 logger_train.info(f"Learning rate (lrh_r): {optimizer_r.param_groups[0]['lr']}")
-            if optimizer_dn:
-                logger_train.info(f"Learning rate (DN): {optimizer_dn.param_groups[0]['lr']}")
+            if optimizer_spd:
+                logger_train.info(f"Learning rate (spd): {optimizer_spd.param_groups[0]['lr']}")
             
             sigma_current_max = sigma_min + (sigma_max - sigma_min) * (epoch / args.epochs)
 
@@ -778,13 +778,13 @@ def main(argv):
                 sigma_previous_max = sigma_current_max
 
             loss = train_one_epoch(
-                lrh_f, lrh_r, dn, criterion, train_dataloader,
-                optimizer_f, optimizer_r, optimizer_dn,
+                lrh_f, lrh_r, spd, criterion, train_dataloader,
+                optimizer_f, optimizer_r, optimizer_spd,
                 epoch, sigma_min, sigma_current_max, logger_train, tb_logger, args
             )
 
             if (epoch+1) % args.val_freq == 0:
-                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, dn, logger_val)
+                test_epoch(args, epoch, test_dataloader, lrh_f, lrh_r, spd, logger_val)
 
             is_best = loss < best_loss
             if is_best:
@@ -819,12 +819,12 @@ def main(argv):
                     save_checkpoint(
                         {
                             "epoch": epoch,
-                            "state_dict": DN.state_dict(),
+                            "state_dict": spd.state_dict(),
                             "loss": loss,
-                            "optimizer": optimizer_dn.state_dict(),
+                            "optimizer": optimizer_spd.state_dict(),
                         },
                         is_best,
-                        os.path.join('experiments', args.experiment, 'checkpoints', "dn_checkpoint.pth.tar")
+                        os.path.join('experiments', args.experiment, 'checkpoints', "spd_checkpoint.pth.tar")
                     )
                 if is_best:
                     logger_train.info(f"Best checkpoints saved, best loss: {best_loss:.4f}")
@@ -833,7 +833,7 @@ def main(argv):
                 logger_train.info(f"No improvement in loss for {args.patience} epochs, early stopping triggered.")
                 break
     else:
-        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, dn, logger_val)
+        test_epoch(args, args.epochs, test_dataloader, lrh_f, lrh_r, spd, logger_val)
 
 
 if __name__ == "__main__":
